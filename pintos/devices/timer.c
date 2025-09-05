@@ -141,15 +141,10 @@ void timer_print_stats(void)
 	printf("Timer: %" PRId64 " ticks\n", timer_ticks());
 }
 
-/* Timer interrupt handler. */
-static void
-timer_interrupt(struct intr_frame *args UNUSED)
+static void wake_due_thread(int64_t now)
 {
-	ticks++;
-	thread_tick();
-
-	int64_t now = ticks;
-
+	ASSERT(intr_get_level() == INTR_OFF);
+	
 	while (!list_empty(&sleep_list))
 	{
 		struct thread *t = list_entry(list_front(&sleep_list), struct thread, elem);
@@ -163,6 +158,16 @@ timer_interrupt(struct intr_frame *args UNUSED)
 			break;
 		}
 	}
+}
+
+/* Timer interrupt handler. */
+static void
+timer_interrupt(struct intr_frame *args UNUSED)
+{
+	ticks++;
+	thread_tick();
+
+	wake_due_thread(ticks);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
