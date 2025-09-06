@@ -144,7 +144,8 @@ void timer_print_stats(void)
 static void wake_due_thread(int64_t now)
 {
 	ASSERT(intr_get_level() == INTR_OFF);
-	
+	// bool need_yield = false;
+
 	while (!list_empty(&sleep_list))
 	{
 		struct thread *t = list_entry(list_front(&sleep_list), struct thread, elem);
@@ -152,12 +153,21 @@ static void wake_due_thread(int64_t now)
 		{
 			list_pop_front(&sleep_list);
 			thread_unblock(t);
+			// if(t->priority > thread_current()->priority)
+			// {
+			// 	need_yield = true;
+			// }
 		}
 		else
 		{
 			break;
 		}
 	}
+
+	// if (need_yield)
+	// {
+	// 	intr_yield_on_return();
+	// }
 }
 
 /* Timer interrupt handler. */
