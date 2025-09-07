@@ -205,11 +205,6 @@ tid_t thread_create(const char *name, int priority,
 	/* Add to run queue. */
 	thread_unblock(t);
 
-	if (t->priority > thread_current()->priority)
-	{
-		thread_yield();
-	}
-
 	return tid;
 }
 
@@ -227,7 +222,8 @@ void thread_block(void)
 	schedule();
 }
 
-static bool higher_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+/* thread의 priority를 비교하는 함수: a의 priority가 더 높은 경우 true를 반환 */
+bool thread_prio_more(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
 {
 	const struct thread *ta = list_entry(a, struct thread, elem);
 	const struct thread *tb = list_entry(b, struct thread, elem);
@@ -245,27 +241,30 @@ static bool higher_priority(const struct list_elem *a, const struct list_elem *b
    update other data. */
 void thread_unblock(struct thread *t)
 {
+	enum intr_level old_level = intr_disable();
 	ASSERT(is_thread(t));
 	ASSERT(t->status == THREAD_BLOCKED);
 
-	enum intr_level old_level = intr_disable();
-
-	list_insert_ordered(&ready_list, &(t->elem), higher_priority, NULL);
+	list_insert_ordered(&ready_list, &(t->elem), thread_prio_more, NULL);
 	t->status = THREAD_READY;
 
-	if (t->priority > thread_current()->priority)
+	bool need_preempt = t->priority > thread_current()->priority;
+	if (intr_context())
 	{
-		if (intr_context())
+		if (need_preempt)
 		{
 			intr_yield_on_return();
 		}
-		else
+		intr_set_level(old_level);
+	}
+	else
+	{
+		intr_set_level(old_level);
+		if (need_preempt)
 		{
 			thread_yield();
 		}
 	}
-
-	intr_set_level(old_level);
 }
 
 /* Returns the name of the running thread. */
@@ -328,7 +327,7 @@ void thread_yield(void)
 
 	old_level = intr_disable();
 	if (curr != idle_thread)
-		list_insert_ordered(&ready_list, &(curr->elem), higher_priority, NULL);
+		list_insert_ordered(&ready_list, &(curr->elem), thread_prio_more, NULL);
 	do_schedule(THREAD_READY);
 	intr_set_level(old_level);
 }
@@ -336,7 +335,26 @@ void thread_yield(void)
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void thread_set_priority(int new_priority)
 {
+	enum intr_level old = intr_disable();
+
 	thread_current()->priority = new_priority;
+
+	// 현재 thread의 변경된 우선순위가 최우선인지 확인
+	bool need_yield = false;
+	if(!list_empty(&ready_list))
+	{
+		struct thread* top = list_entry(list_front(&ready_list), struct thread, elem);
+		if (new_priority < top->priority)
+		{
+			need_yield = true;
+		}
+	}
+
+	intr_set_level(old);
+	if(need_yield)
+	{
+		thread_yield();
+	}
 }
 
 /* Returns the current thread's priority. */
@@ -452,7 +470,8 @@ next_thread_to_run(void)
 
 	struct list_elem *e = list_front(&ready_list);
 	list_remove(e);
-	return (struct thread *)list_entry(e, struct thread, elem);
+	struct thread *picked = (struct thread *)list_entry(e, struct thread, elem);
+	return picked;
 }
 
 /* Use iretq to launch the thread */

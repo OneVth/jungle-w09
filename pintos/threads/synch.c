@@ -32,14 +32,6 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
-static bool prio_more(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
-{
-	const struct thread *ta = list_entry(a, struct thread, elem);
-	const struct thread *tb = list_entry(b, struct thread, elem);
-
-	return ta->priority > tb->priority;
-}
-
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -75,7 +67,7 @@ void sema_down(struct semaphore *sema)
 	old_level = intr_disable();
 	while (sema->value == 0)
 	{
-		list_insert_ordered(&sema->waiters, &thread_current()->elem, prio_more, NULL);
+		list_insert_ordered(&sema->waiters, &(thread_current()->elem), thread_prio_more, NULL);
 		thread_block();
 	}
 	sema->value--;
@@ -118,26 +110,31 @@ void sema_up(struct semaphore *sema)
 	struct thread *unblocked = NULL;
 
 	sema->value++;
+
 	if (!list_empty(&sema->waiters))
 	{
 		unblocked = list_entry(list_pop_front(&sema->waiters), struct thread, elem);
 		thread_unblock(unblocked);
 	}
 
-	if (unblocked && unblocked->priority > thread_current()->priority)
+
+	bool need_yield = unblocked && unblocked->priority > thread_current()->priority;
+	if (intr_context())
 	{
-		if (intr_context())
+		if (need_yield)
 		{
 			intr_yield_on_return();
 		}
-		else
+		intr_set_level(old_level);
+	}
+	else
+	{
+		intr_set_level(old_level);
+		if (need_yield)
 		{
-			intr_set_level(old_level);
 			thread_yield();
-			return;
 		}
 	}
-	intr_set_level(old_level);
 }
 
 static void sema_test_helper(void *sema_);
