@@ -79,6 +79,8 @@ static tid_t allocate_tid(void);
 // setup temporal gdt first.
 static uint64_t gdt[3] = {0, 0x00af9a000000ffff, 0x00cf92000000ffff};
 
+#define DONATION_DEPTH 8 // 체인 무한루프 방지
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -234,6 +236,75 @@ bool thread_prio_more(const struct list_elem *a, const struct list_elem *b, void
 	return ta->priority > tb->priority;
 }
 
+/* thread의 priority를 비교하는 함수: a의 priority가 더 높은 경우 true를 반환 - donations를 정렬할 때 사용*/
+bool donor_more(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+	const struct thread *ta = list_entry(a, struct thread, donation_elem);
+	const struct thread *tb = list_entry(b, struct thread, donation_elem);
+
+	return ta->priority > tb->priority;
+}
+
+void refresh_priority(struct thread *t)
+{
+	int new_priority = t->base_priority;
+
+	if (!list_empty(&t->donations))
+	{
+		struct thread *top = list_entry(list_front(&t->donations), struct thread, donation_elem);
+		if (top->priority > new_priority)
+		{
+			new_priority = top->priority;
+		}
+	}
+
+	t->priority = new_priority;
+}
+
+/* 현재 스레드(cur)의 우선순위를 holder 체인으로 전파 */
+void donate_chain(struct thread *holder)
+{
+	struct thread *cur = thread_current();
+	int donating = cur->priority;
+	int depth = 0;
+
+	while (holder && depth++ < DONATION_DEPTH)
+	{
+		if (holder->priority >= donating)
+		{
+			break;
+		}
+		holder->priority = donating;
+
+		/* holder가 또 기다리는 락이 있다면 그 락의 holder에게 전파 */
+		if (holder->waiting_lock && holder->waiting_lock->holder)
+		{
+			holder = holder->waiting_lock->holder;
+		}
+		else
+		{
+			break;
+		}
+	}
+}
+
+void remove_donations_for_lock(struct thread* t, struct lock* lock)
+{
+	struct list_elem* e = list_begin(&(t->donations));
+	while (e != list_end(&(t->donations)))
+	{
+		struct thread* donor = list_entry(e, struct thread, donation_elem);
+		if (donor->waiting_lock == lock)
+		{
+			e = list_remove(&(donor->donation_elem));
+		}
+		else
+		{
+			e = list_next(e);
+		}
+	}
+}
+
 /* Transitions a blocked thread T to the ready-to-run state.
    This is an error if T is not blocked.  (Use thread_yield() to
    make the running thread ready.)
@@ -341,10 +412,20 @@ void thread_yield(void)
 void thread_set_priority(int new_priority)
 {
 	enum intr_level old = intr_disable();
+	struct thread *cur = thread_current();
 
-	int old_prio = thread_current()->priority;
-	LOGF("PRIOSET %s#%d %d->%d", thread_current()->name, thread_current()->tid, old_prio, new_priority);
-	thread_current()->priority = new_priority;
+	int old_prio = cur->priority;
+	LOGF("PRIOSET %s#%d %d->%d", cur->name, cur->tid, old_prio, new_priority);
+	cur->base_priority = new_priority;
+	cur->priority = new_priority;
+
+	refresh_priority(cur);
+	if(cur->waiting_lock != NULL)
+	{
+		list_remove(&(cur->donation_elem));
+		list_insert_ordered(&(cur->waiting_lock->holder->donations), &(cur->donation_elem), donor_more, NULL);
+		donate_chain(cur->waiting_lock->holder);
+	}
 
 	// 현재 thread의 변경된 우선순위가 최우선인지 확인
 	bool need_yield = false;
@@ -462,6 +543,9 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->tf.rsp = (uint64_t)t + PGSIZE - sizeof(void *);
 	t->priority = priority;
 	t->magic = THREAD_MAGIC;
+	t->base_priority = priority;
+	list_init(&t->donations);
+	t->waiting_lock = NULL;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

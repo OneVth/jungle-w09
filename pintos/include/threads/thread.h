@@ -88,11 +88,15 @@ typedef int tid_t;
 struct thread
 {
 	/* Owned by thread.c. */
-	tid_t tid;				   /* Thread identifier. */
-	enum thread_status status; /* Thread state. */
-	char name[16];			   /* Name (for debugging purposes). */
-	int priority;			   /* Priority. */
-	int64_t wakeup_tick;	   /* Wake-up time (in ticks) for alarm sleep. */
+	tid_t tid;						/* Thread identifier. */
+	enum thread_status status;		/* Thread state. */
+	char name[16];					/* Name (for debugging purposes). */
+	int base_priority;				/* 본래 우선순위 */
+	int priority;					/* Priority. */
+	struct list donations;			/* 나에게 기부한 스레드들 (정렬 유지) */
+	struct lock *waiting_lock;		/* 내가 지금 기다리는 락(없으면 NULL) */
+	struct list_elem donation_elem; /* 내가 남에게 기부자로서 남의 리스트에 들어갈 때 사용 */
+	int64_t wakeup_tick;			/* Wake-up time (in ticks) for alarm sleep. */
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem; /* List element. */
@@ -137,7 +141,12 @@ void thread_yield(void);
 
 int thread_get_priority(void);
 void thread_set_priority(int);
-bool thread_prio_more(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED);
+bool thread_prio_more(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+
+bool donor_more(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+void donate_chain(struct thread *holder);
+void remove_donations_for_lock(struct thread* t, struct lock* lock);
+void refresh_priority(struct thread *t);
 
 int thread_get_nice(void);
 void thread_set_nice(int);

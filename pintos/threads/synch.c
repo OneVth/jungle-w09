@@ -114,10 +114,10 @@ void sema_up(struct semaphore *sema)
 
 	if (!list_empty(&sema->waiters))
 	{
+		list_sort(&sema->waiters, thread_prio_more, NULL);
 		unblocked = list_entry(list_pop_front(&sema->waiters), struct thread, elem);
 		thread_unblock(unblocked);
 	}
-
 
 	bool need_yield = unblocked && unblocked->priority > thread_current()->priority;
 	if (intr_context())
@@ -211,7 +211,23 @@ void lock_acquire(struct lock *lock)
 	ASSERT(!intr_context());
 	ASSERT(!lock_held_by_current_thread(lock));
 
+	if(lock->holder != NULL && !thread_mlfqs)
+	{
+		struct thread* cur = thread_current();
+		cur->waiting_lock = lock;
+
+		enum intr_level old = intr_disable();
+		// holder의 donations에 cur를 우선순위 정렬된 상태로 삽입
+		list_insert_ordered(&(lock->holder->donations), &(cur->donation_elem), donor_more, NULL);
+
+		// 체인 전파
+		donate_chain(lock->holder);
+		intr_set_level(old);
+	}
+
 	sema_down(&lock->semaphore);
+
+	thread_current()->waiting_lock = NULL;
 	lock->holder = thread_current();
 }
 
@@ -245,8 +261,12 @@ void lock_release(struct lock *lock)
 	ASSERT(lock != NULL);
 	ASSERT(lock_held_by_current_thread(lock));
 
+	enum intr_level old = intr_disable();
 	struct thread* cur = thread_current();
-	int before = cur->priority;
+	remove_donations_for_lock(cur, lock);
+	refresh_priority(cur);
+	intr_set_level(old);
+
 	lock->holder = NULL;
 	sema_up(&lock->semaphore);
 }
@@ -276,6 +296,17 @@ void cond_init(struct condition *cond)
 	ASSERT(cond != NULL);
 
 	list_init(&cond->waiters);
+}
+
+static bool cond_sema_more(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+	const struct semaphore_elem *sa = list_entry(a, struct semaphore_elem, elem);
+	const struct semaphore_elem *sb = list_entry(b, struct semaphore_elem, elem);
+
+	const struct thread *ta = list_entry(list_front(&(sa->semaphore.waiters)), struct thread, elem);
+	const struct thread *tb = list_entry(list_front(&(sb->semaphore.waiters)), struct thread, elem);
+
+	return ta->priority > tb->priority;
 }
 
 /* Atomically releases LOCK and waits for COND to be signaled by
@@ -329,9 +360,12 @@ void cond_signal(struct condition *cond, struct lock *lock UNUSED)
 	ASSERT(lock_held_by_current_thread(lock));
 
 	if (!list_empty(&cond->waiters))
+	{
+		list_sort(&(cond->waiters), cond_sema_more, NULL);
 		sema_up(&list_entry(list_pop_front(&cond->waiters),
 							struct semaphore_elem, elem)
 					 ->semaphore);
+	}
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
