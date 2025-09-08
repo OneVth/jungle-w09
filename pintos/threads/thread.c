@@ -11,6 +11,7 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
+#include "debuglog.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -218,7 +219,9 @@ void thread_block(void)
 {
 	ASSERT(!intr_context());
 	ASSERT(intr_get_level() == INTR_OFF);
-	thread_current()->status = THREAD_BLOCKED;
+	struct thread *cur = thread_current();
+	LOGF("BLOCK    %s#%d p=%d", TINFO(cur));
+	cur->status = THREAD_BLOCKED;
 	schedule();
 }
 
@@ -245,6 +248,7 @@ void thread_unblock(struct thread *t)
 	ASSERT(is_thread(t));
 	ASSERT(t->status == THREAD_BLOCKED);
 
+	LOGF("UNBLOCK %s#%d p=%d", TINFO(t));
 	list_insert_ordered(&ready_list, &(t->elem), thread_prio_more, NULL);
 	t->status = THREAD_READY;
 
@@ -320,14 +324,15 @@ void thread_exit(void)
    may be scheduled again immediately at the scheduler's whim. */
 void thread_yield(void)
 {
-	struct thread *curr = thread_current();
+	struct thread *cur = thread_current();
+	LOGF("YIELD    %s#%d p=%d", TINFO(cur));
 	enum intr_level old_level;
 
 	ASSERT(!intr_context());
 
 	old_level = intr_disable();
-	if (curr != idle_thread)
-		list_insert_ordered(&ready_list, &(curr->elem), thread_prio_more, NULL);
+	if (cur != idle_thread)
+		list_insert_ordered(&ready_list, &(cur->elem), thread_prio_more, NULL);
 	do_schedule(THREAD_READY);
 	intr_set_level(old_level);
 }
@@ -337,13 +342,15 @@ void thread_set_priority(int new_priority)
 {
 	enum intr_level old = intr_disable();
 
+	int old_prio = thread_current()->priority;
+	LOGF("PRIOSET %s#%d %d->%d", thread_current()->name, thread_current()->tid, old_prio, new_priority);
 	thread_current()->priority = new_priority;
 
 	// 현재 thread의 변경된 우선순위가 최우선인지 확인
 	bool need_yield = false;
-	if(!list_empty(&ready_list))
+	if (!list_empty(&ready_list))
 	{
-		struct thread* top = list_entry(list_front(&ready_list), struct thread, elem);
+		struct thread *top = list_entry(list_front(&ready_list), struct thread, elem);
 		if (new_priority < top->priority)
 		{
 			need_yield = true;
@@ -351,7 +358,7 @@ void thread_set_priority(int new_priority)
 	}
 
 	intr_set_level(old);
-	if(need_yield)
+	if (need_yield)
 	{
 		thread_yield();
 	}
@@ -599,6 +606,7 @@ schedule(void)
 	ASSERT(intr_get_level() == INTR_OFF);
 	ASSERT(curr->status != THREAD_RUNNING);
 	ASSERT(is_thread(next));
+
 	/* Mark us as running. */
 	next->status = THREAD_RUNNING;
 
@@ -628,6 +636,9 @@ schedule(void)
 		/* Before switching the thread, we first save the information
 		 * of current running. */
 		thread_launch(next);
+
+		LOGF("SWITCH from %s#%d p=%d", TINFO(curr));
+		LOGF("SWITCH   to %s#%d p=%d", TINFO(next));
 	}
 }
 
