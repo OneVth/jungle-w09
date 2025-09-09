@@ -245,6 +245,23 @@ bool donor_more(const struct list_elem *a, const struct list_elem *b, void *aux 
 	return ta->priority > tb->priority;
 }
 
+// list 안에 elem이 있는지 확인하는 함수 (디버깅 용)
+bool elem_in_list(struct list *lst, struct list_elem *e)
+{
+	for (struct list_elem *p = list_begin(lst); p != list_end(lst); p = list_next(p))
+	{
+		if (p == e)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+/* Recompute effective priority of T.
+   Effective priority = max(base_priority, max(donors)).
+   Must be called with interrupts disabled if T->donations is modified
+   concurrently. Does not touch waiting_lock or donations content. */
 void refresh_priority(struct thread *t)
 {
 	int new_priority = t->base_priority;
@@ -262,6 +279,10 @@ void refresh_priority(struct thread *t)
 }
 
 /* 현재 스레드(cur)의 우선순위를 holder 체인으로 전파 */
+/* Propagate current thread's priority to HOLDER through the chain of
+   waiting_lock->holder links (priority inheritance).
+   Stops when HOLDER already has >= donating priority or when chain depth
+   exceeds DONATION_DEPTH. Interrupts must be disabled by caller. */
 void donate_chain(struct thread *holder)
 {
 	struct thread *cur = thread_current();
@@ -270,6 +291,11 @@ void donate_chain(struct thread *holder)
 
 	while (holder && depth++ < DONATION_DEPTH)
 	{
+		LOGF("DONATE  hop=%d donor=%s#%d p=%d -> holder=%s#%d p:%d->%d next_lock=%p",
+			 depth, cur->name, cur->tid, donating,
+			 holder->name, holder->tid, holder->priority, donating,
+			 holder->waiting_lock ? (void *)holder->waiting_lock : NULL);
+
 		if (holder->priority >= donating)
 		{
 			break;
@@ -288,12 +314,15 @@ void donate_chain(struct thread *holder)
 	}
 }
 
-void remove_donations_for_lock(struct thread* t, struct lock* lock)
+/* Remove from T->donations only those donors that were waiting for LOCK.
+   Caller must disable interrupts. After removal, caller should call
+   refresh_priority(T) to restore T's effective priority. */
+void remove_donations_for_lock(struct thread *t, struct lock *lock)
 {
-	struct list_elem* e = list_begin(&(t->donations));
+	struct list_elem *e = list_begin(&(t->donations));
 	while (e != list_end(&(t->donations)))
 	{
-		struct thread* donor = list_entry(e, struct thread, donation_elem);
+		struct thread *donor = list_entry(e, struct thread, donation_elem);
 		if (donor->waiting_lock == lock)
 		{
 			e = list_remove(&(donor->donation_elem));
@@ -411,19 +440,31 @@ void thread_yield(void)
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void thread_set_priority(int new_priority)
 {
+	if (thread_mlfqs)
+	{
+		return;
+	}
+
 	enum intr_level old = intr_disable();
 	struct thread *cur = thread_current();
+	int base_before = cur->base_priority, eff_before = cur->priority;
 
-	int old_prio = cur->priority;
-	LOGF("PRIOSET %s#%d %d->%d", cur->name, cur->tid, old_prio, new_priority);
 	cur->base_priority = new_priority;
-	cur->priority = new_priority;
+	refresh_priority(cur); // 유효 우선순위 = max(base, donors)
 
-	refresh_priority(cur);
-	if(cur->waiting_lock != NULL)
+	LOGF("PRIOSET %s#%d base:%d->%d eff:%d->%d wait=%p",
+		 cur->name, cur->tid, base_before, new_priority, eff_before, cur->priority, cur->waiting_lock);
+
+	// 내가 어떤 락을 기다리는 중이라면: 상대(holder) donation 재정렬 + 전파
+	if (cur->waiting_lock != NULL && cur->waiting_lock->holder != NULL && !thread_mlfqs)
 	{
-		list_remove(&(cur->donation_elem));
-		list_insert_ordered(&(cur->waiting_lock->holder->donations), &(cur->donation_elem), donor_more, NULL);
+		struct list *dl = &(cur->waiting_lock->holder->donations);
+
+		if (elem_in_list(dl, &(cur->donation_elem)))
+		{
+			list_remove(&(cur->donation_elem));
+		}
+		list_insert_ordered(dl, &(cur->donation_elem), donor_more, NULL);
 		donate_chain(cur->waiting_lock->holder);
 	}
 
@@ -432,7 +473,7 @@ void thread_set_priority(int new_priority)
 	if (!list_empty(&ready_list))
 	{
 		struct thread *top = list_entry(list_front(&ready_list), struct thread, elem);
-		if (new_priority < top->priority)
+		if (cur->priority < top->priority)
 		{
 			need_yield = true;
 		}

@@ -50,6 +50,9 @@ void sema_init(struct semaphore *sema, unsigned value)
 	list_init(&sema->waiters);
 }
 
+/* semaphore down: inserts current thread into sema->waiters in
+   priority order and blocks. Highest-priority waiter will be unblocked
+   by sema_up(). The waiters list uses thread->elem comparator. */
 /* Down or "P" operation on a semaphore.  Waits for SEMA's value
    to become positive and then atomically decrements it.
 
@@ -210,15 +213,16 @@ void lock_acquire(struct lock *lock)
 	ASSERT(lock != NULL);
 	ASSERT(!intr_context());
 	ASSERT(!lock_held_by_current_thread(lock));
-
+	
+	struct thread* cur = thread_current();
 	if(lock->holder != NULL && !thread_mlfqs)
 	{
-		struct thread* cur = thread_current();
 		cur->waiting_lock = lock;
-
 		enum intr_level old = intr_disable();
+
 		// holder의 donations에 cur를 우선순위 정렬된 상태로 삽입
 		list_insert_ordered(&(lock->holder->donations), &(cur->donation_elem), donor_more, NULL);
+		ASSERT(elem_in_list(&(lock->holder->donations), &(cur->donation_elem)));
 
 		// 체인 전파
 		donate_chain(lock->holder);
@@ -226,9 +230,11 @@ void lock_acquire(struct lock *lock)
 	}
 
 	sema_down(&lock->semaphore);
+	cur->waiting_lock = NULL;
+	lock->holder = cur;
 
-	thread_current()->waiting_lock = NULL;
-	lock->holder = thread_current();
+	ASSERT(cur->waiting_lock == NULL);
+	ASSERT(lock->holder == cur);
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -281,6 +287,11 @@ bool lock_held_by_current_thread(const struct lock *lock)
 	return lock->holder == thread_current();
 }
 
+/* condition variable:
+   cond->waiters holds semaphore_elems. On signal(), the list is sorted
+   by the top-priority waiter inside each embedded semaphore, then the
+   front element's semaphore is upped. This reflects the latest priority
+   (donation may change priorities while waiting). */
 /* One semaphore in a list. */
 struct semaphore_elem
 {

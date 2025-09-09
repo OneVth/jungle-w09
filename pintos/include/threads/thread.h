@@ -147,6 +147,7 @@ bool donor_more(const struct list_elem *a, const struct list_elem *b, void *aux 
 void donate_chain(struct thread *holder);
 void remove_donations_for_lock(struct thread* t, struct lock* lock);
 void refresh_priority(struct thread *t);
+bool elem_in_list(struct list* lst, struct list_elem* e);
 
 int thread_get_nice(void);
 void thread_set_nice(int);
