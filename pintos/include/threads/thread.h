@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "threads/fixed_point.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -101,6 +102,11 @@ struct thread
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem; /* List element. */
 
+	/* MLFQS */
+	int nice;
+	fp_t recent_cpu;
+	struct list_elem allelem;
+
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4; /* Page map level 4 */
@@ -131,6 +137,7 @@ tid_t thread_create(const char *name, int priority, thread_func *, void *);
 
 void thread_block(void);
 void thread_unblock(struct thread *);
+void thread_preempt(void);
 
 struct thread *thread_current(void);
 tid_t thread_tid(void);
@@ -153,6 +160,10 @@ int thread_get_nice(void);
 void thread_set_nice(int);
 int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
+
+void mlfqs_increment(void);
+void mlfqs_recalc_load_avg_and_recent_cpu(void);
+void mlfqs_recalc_priorities(void);
 
 void do_iret(struct intr_frame *tf);
 

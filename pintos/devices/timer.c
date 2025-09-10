@@ -145,6 +145,7 @@ static void wake_due_thread(int64_t now)
 {
 	ASSERT(intr_get_level() == INTR_OFF);
 
+	bool is_wake = false;
 	while (!list_empty(&sleep_list))
 	{
 		struct thread *t = list_entry(list_front(&sleep_list), struct thread, elem);
@@ -159,6 +160,10 @@ static void wake_due_thread(int64_t now)
 		}
 	}
 
+	if (is_wake)
+	{
+		thread_preempt();
+	}
 }
 
 /* Timer interrupt handler. */
@@ -166,9 +171,25 @@ static void
 timer_interrupt(struct intr_frame *args UNUSED)
 {
 	ticks++;
-	thread_tick();
 
 	wake_due_thread(ticks);
+
+	if (thread_mlfqs)
+	{
+		mlfqs_increment();
+
+		if (ticks % TIMER_FREQ == 0)
+		{
+			mlfqs_recalc_load_avg_and_recent_cpu();
+		}
+
+		if (ticks % 4 == 0)
+		{
+			mlfqs_recalc_priorities();
+		}
+	}
+
+	thread_tick();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

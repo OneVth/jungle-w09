@@ -122,6 +122,7 @@ void sema_up(struct semaphore *sema)
 		thread_unblock(unblocked);
 	}
 
+	intr_set_level(old_level);
 	bool need_yield = unblocked && unblocked->priority > thread_current()->priority;
 	if (intr_context())
 	{
@@ -213,9 +214,9 @@ void lock_acquire(struct lock *lock)
 	ASSERT(lock != NULL);
 	ASSERT(!intr_context());
 	ASSERT(!lock_held_by_current_thread(lock));
-	
-	struct thread* cur = thread_current();
-	if(lock->holder != NULL && !thread_mlfqs)
+
+	struct thread *cur = thread_current();
+	if (lock->holder != NULL && !thread_mlfqs)
 	{
 		cur->waiting_lock = lock;
 		enum intr_level old = intr_disable();
@@ -268,9 +269,13 @@ void lock_release(struct lock *lock)
 	ASSERT(lock_held_by_current_thread(lock));
 
 	enum intr_level old = intr_disable();
-	struct thread* cur = thread_current();
-	remove_donations_for_lock(cur, lock);
-	refresh_priority(cur);
+	if (!thread_mlfqs)
+	{
+		struct thread *cur = thread_current();
+		remove_donations_for_lock(cur, lock);
+		refresh_priority(cur);
+	}
+
 	intr_set_level(old);
 
 	lock->holder = NULL;
